@@ -1,0 +1,96 @@
+cat > lxd-init.yaml <<EOF
+config: {}
+networks:
+- config:
+    ipv4.address: auto
+    ipv6.address: auto
+  description: ""
+  name: lxdbr0
+  type: ""
+  project: default
+storage_pools:
+- config:
+    size: 12GB
+  description: ""
+  name: default
+  driver: zfs
+profiles:
+- config: {}
+  description: ""
+  devices:
+    eth0:
+      name: eth0
+      network: lxdbr0
+      type: nic
+    root:
+      path: /
+      pool: default
+      type: disk
+  name: default
+projects: []
+cluster: null
+EOF
+cat lxd-init.yaml | sudo lxd init --preseed
+rm lxd-init.yaml
+lxc profile create microk8s
+cat > microk8s.profile <<EOF
+config:
+  boot.autostart: "true"
+  linux.kernel_modules: ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,br_netfilter,nf_conntrack_ipv4
+  raw.lxc: |
+    lxc.apparmor.profile=unconfined
+    lxc.mount.auto=proc:rw sys:rw cgroup:rw
+    lxc.cgroup.devices.allow=a
+    lxc.cap.drop=
+  security.nesting: "true"
+  security.privileged: "true"
+  security.syscalls.intercept.bpf: "true"
+  security.syscalls.intercept.bpf.devices: "true"
+  security.syscalls.intercept.mknod: "true"
+  security.syscalls.intercept.setxattr: "true"
+description: ""
+devices:
+  aadisable:
+    path: /sys/module/nf_conntrack/parameters/hashsize
+    source: /sys/module/nf_conntrack/parameters/hashsize
+    type: disk
+  aadisable1:
+    path: /sys/module/apparmor/parameters/enabled
+    source: /dev/null
+    type: disk
+  aadisable2:
+    path: /dev/zfs
+    source: /dev/zfs
+    type: disk
+  aadisable3:
+    path: /dev/kmsg
+    source: /dev/kmsg
+    type: disk
+  aadisable4:
+    path: /sys/fs/bpf
+    source: /sys/fs/bpf
+    type: disk
+name: microk8s
+used_by: []
+EOF
+cat microk8s.profile | lxc profile edit microk8s
+rm microk8s.profile
+lxc launch -p default -p microk8s ubuntu:20.04 microk8s
+sleep 10
+lxc exec microk8s -- sudo snap install microk8s --classic
+lxc shell microk8s
+cat > /etc/rc.local <<EOF
+#!/bin/bash
+
+apparmor_parser --replace /var/lib/snapd/apparmor/profiles/snap.microk8s.*
+exit 0
+EOF
+chmod +x /etc/rc.local
+systemctl restart rc-local
+echo 'L /dev/kmsg - - - - /dev/null' > /etc/tmpfiles.d/kmsg.conf
+exit
+echo '--conntrack-max-per-core=0' >> /var/snap/microk8s/current/args/kube-proxy
+lxc restart microk8s
+lxc exec microk8s -- sudo swapoff -a
+lxc exec microk8s -- sudo microk8s.kubectl create deployment microbot --image=dontrebootme/microbot:v1
+lxc exec microk8s -- sudo microk8s.kubectl get all
